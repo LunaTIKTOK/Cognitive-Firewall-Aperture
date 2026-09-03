@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Clearspend — Personal Budgeting</title>
+<title>Clearspend</title>
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -22,36 +22,52 @@
 
       <div class="topbar-actions">
         <button id="themeToggle" class="icon-btn" title="Toggle theme">🌙</button>
-        <button id="exportBtn" class="btn btn-ghost">Export</button>
-        <label class="btn btn-ghost file-btn">
-          Import
-          <input type="file" id="importInput" accept="application/json" hidden />
-        </label>
+        <button id="backupBtn" class="btn btn-ghost">Backup</button>
         <button id="addTxnBtn" class="btn btn-primary">+ Add Transaction</button>
       </div>
     </header>
 
     <main class="content">
+      <div id="sampleNotice" class="sample-notice" hidden>
+        <span>You're looking at <strong>example data</strong> for the last three months. It is not your money.</span>
+        <span class="notice-actions">
+          <button id="sampleClearBtn" class="btn btn-primary btn-sm">Start fresh</button>
+          <button id="sampleKeepBtn" class="btn btn-ghost btn-sm">Keep examples</button>
+        </span>
+      </div>
+
       <section class="summary-grid">
         <div class="summary-card income">
           <div class="summary-label">Income</div>
           <div class="summary-value" id="sumIncome">$0.00</div>
         </div>
         <div class="summary-card expense">
-          <div class="summary-label">Expenses</div>
+          <div class="summary-label">Spent</div>
           <div class="summary-value" id="sumExpense">$0.00</div>
         </div>
+        <div class="summary-card invest">
+          <div class="summary-label">Invested</div>
+          <div class="summary-value" id="sumInvested">$0.00</div>
+        </div>
         <div class="summary-card net">
-          <div class="summary-label">Net</div>
+          <div class="summary-label">Left over</div>
           <div class="summary-value" id="sumNet">$0.00</div>
         </div>
-        <div class="summary-card rate">
-          <div class="summary-label">Savings Rate</div>
+        <div class="summary-card rate" title="Investments plus what's left over, as a share of income">
+          <div class="summary-label">Savings rate</div>
           <div class="summary-value" id="sumRate">0%</div>
         </div>
       </section>
 
       <section class="panels">
+        <div class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Envelopes</h2>
+            <span class="panel-hint">Set how much each envelope gets every month. Categories fill their envelope as you spend.</span>
+          </div>
+          <div id="envelopeGrid" class="envelope-grid"></div>
+        </div>
+
         <div class="panel panel-wide">
           <div class="panel-header">
             <h2>Transactions</h2>
@@ -75,7 +91,6 @@
                   <th data-sort="description">Description</th>
                   <th data-sort="category">Category</th>
                   <th data-sort="amount" class="num">Amount</th>
-                  <th></th>
                 </tr>
               </thead>
               <tbody id="txnTableBody"></tbody>
@@ -95,9 +110,9 @@
           <div id="categoryLegend" class="legend"></div>
         </div>
 
-        <div class="panel panel-wide">
+        <div class="panel">
           <div class="panel-header">
-            <h2>Budgets</h2>
+            <h2>Category Budgets</h2>
             <button id="manageBudgetsBtn" class="btn btn-ghost btn-sm">Manage</button>
           </div>
           <div id="budgetList" class="budget-list"></div>
@@ -115,7 +130,7 @@
             <h2>Recurring Transactions</h2>
             <button id="addRecurringBtn" class="btn btn-ghost btn-sm">+ Add Recurring</button>
           </div>
-          <form id="recurringForm" class="new-category-form" hidden>
+          <form id="recurringForm" class="inline-form" hidden>
             <input type="text" id="recDescription" placeholder="Description" required style="flex:2" />
             <select id="recCategory"></select>
             <select id="recType">
@@ -140,7 +155,7 @@
     <div class="modal">
       <div class="modal-header">
         <h3 id="txnModalTitle">Add Transaction</h3>
-        <button class="icon-btn" id="txnModalClose">✕</button>
+        <button class="icon-btn" id="txnModalClose" aria-label="Close">✕</button>
       </div>
       <form id="txnForm" class="modal-body">
         <input type="hidden" id="txnId" />
@@ -162,6 +177,7 @@
         <div class="form-row">
           <label for="txnCategory">Category</label>
           <select id="txnCategory"></select>
+          <span class="field-hint" id="txnEnvelopeHint"></span>
         </div>
         <div class="form-row">
           <label for="txnAmount">Amount</label>
@@ -180,23 +196,60 @@
     </div>
   </div>
 
-  <!-- Manage Budgets Modal -->
+  <!-- Manage Envelopes & Categories Modal -->
   <div class="modal-overlay" id="budgetModalOverlay" hidden>
-    <div class="modal">
+    <div class="modal modal-lg">
       <div class="modal-header">
-        <h3>Manage Categories & Budgets</h3>
-        <button class="icon-btn" id="budgetModalClose">✕</button>
+        <h3>Envelopes &amp; Categories</h3>
+        <button class="icon-btn" id="budgetModalClose" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
-        <div id="budgetEditList" class="budget-edit-list"></div>
-        <form id="newCategoryForm" class="new-category-form">
-          <input type="text" id="newCategoryName" placeholder="New category name" required />
-          <input type="number" id="newCategoryLimit" placeholder="Monthly limit" min="0" step="0.01" />
+        <h4 class="modal-section-title">Envelopes</h4>
+        <p class="field-hint">Rename an envelope or change its monthly amount.</p>
+        <div id="envelopeEditList" class="edit-list"></div>
+
+        <h4 class="modal-section-title">Categories</h4>
+        <p class="field-hint">Each category belongs to one envelope. The limit is an optional per-category budget.</p>
+        <div class="edit-list-head">
+          <span>Name</span><span>Limit</span><span>Envelope</span><span></span>
+        </div>
+        <div id="budgetEditList" class="edit-list"></div>
+        <form id="newCategoryForm" class="inline-form">
+          <input type="text" id="newCategoryName" placeholder="New category" required />
+          <input type="number" id="newCategoryLimit" placeholder="Limit" min="0" step="0.01" style="width:100px" />
+          <select id="newCategoryEnvelope"></select>
           <button type="submit" class="btn btn-secondary">Add</button>
         </form>
       </div>
       <div class="modal-actions">
+        <div style="flex:1"></div>
         <button class="btn btn-primary" id="budgetModalDone">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backup / Restore Modal -->
+  <div class="modal-overlay" id="backupModalOverlay" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Backup &amp; Restore</h3>
+        <button class="icon-btn" id="backupModalClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="field-hint">Your data lives only in this browser. Copy the text below and keep it somewhere safe. To move it to another device, paste a backup here and press Restore.</p>
+        <textarea id="backupText" class="backup-text" spellcheck="false" aria-label="Backup data"></textarea>
+        <div class="inline-form local-only">
+          <button type="button" class="btn btn-ghost" id="backupDownloadBtn">Download file</button>
+          <label class="btn btn-ghost file-btn">
+            Import file
+            <input type="file" id="importInput" accept="application/json" hidden />
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="backupRestoreBtn">Restore from pasted text</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-primary" id="backupCopyBtn">Copy backup</button>
       </div>
     </div>
   </div>

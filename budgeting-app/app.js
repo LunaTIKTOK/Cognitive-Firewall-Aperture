@@ -2,8 +2,10 @@
   "use strict";
 
   const STORAGE_KEY = "clearspend.budget.v1";
+  const HOSTED = !!window.CLEARSPEND_HOSTED; // set by the single-file build, where file downloads are blocked
   const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
   const CHART_COLORS = ["#4f5df7","#16a34a","#e11d48","#d97706","#0891b2","#7c3aed","#db2777","#65a30d","#0284c7","#c2410c"];
+  const ENVELOPE_KIND_LABEL = { fixed: "Fixed", variable: "Variable", investment: "Investment" };
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
@@ -12,10 +14,9 @@
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
 
-  function todayISO(offsetDays = 0) {
+  function todayISO() {
     const d = new Date();
-    d.setDate(d.getDate() + offsetDays);
-    return d.toISOString().slice(0, 10);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
 
   function formatCurrency(n) {
@@ -49,22 +50,42 @@
     return new Date(y, m, 0).getDate();
   }
 
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
   // ---------- Default / Seed Data ----------
 
-  function defaultCategories() {
+  function defaultEnvelopes() {
     return [
-      { name: "Income", limit: 0 },
-      { name: "Housing", limit: 1500 },
-      { name: "Groceries", limit: 500 },
-      { name: "Transportation", limit: 200 },
-      { name: "Dining Out", limit: 150 },
-      { name: "Entertainment", limit: 100 },
-      { name: "Utilities", limit: 250 },
-      { name: "Healthcare", limit: 100 },
-      { name: "Shopping", limit: 150 },
-      { name: "Savings", limit: 0 },
-      { name: "Other", limit: 100 },
+      { id: "fixed", name: "Fixed Expenses", kind: "fixed", allocation: 1800 },
+      { id: "variable", name: "Variable Expenses", kind: "variable", allocation: 1300 },
+      { id: "investment", name: "Investments", kind: "investment", allocation: 800 },
     ];
+  }
+
+  // Category name -> envelope id, used for defaults and for upgrading older saved data.
+  const DEFAULT_CATEGORY_ENVELOPE = {
+    Income: null,
+    Housing: "fixed",
+    Utilities: "fixed",
+    Groceries: "variable",
+    Transportation: "variable",
+    "Dining Out": "variable",
+    Entertainment: "variable",
+    Healthcare: "variable",
+    Shopping: "variable",
+    Other: "variable",
+    Savings: "investment",
+    Investments: "investment",
+  };
+
+  function defaultCategories() {
+    const limits = {
+      Income: 0, Housing: 1500, Groceries: 500, Transportation: 200, "Dining Out": 150, Entertainment: 100,
+      Utilities: 250, Healthcare: 100, Shopping: 150, Savings: 0, Investments: 0, Other: 100,
+    };
+    return Object.keys(limits).map((name) => ({ name, limit: limits[name], envelope: DEFAULT_CATEGORY_ENVELOPE[name] }));
   }
 
   function seedTransactions() {
@@ -86,6 +107,7 @@
         { day: 20, description: "Trader Joe's", category: "Groceries", amount: 98.3, type: "expense" },
         { day: 22, description: "New shoes", category: "Shopping", amount: 78.99, type: "expense" },
         { day: 25, description: "Transfer to savings", category: "Savings", amount: 400, type: "expense" },
+        { day: 26, description: "Index fund purchase", category: "Investments", amount: 300, type: "expense" },
         { day: 27, description: "Internet bill", category: "Utilities", amount: 60, type: "expense" },
       ];
       for (const r of rows) {
@@ -106,11 +128,29 @@
 
   function defaultState() {
     return {
-      theme: "light",
+      theme: null,
+      sample: true,
+      envelopes: defaultEnvelopes(),
       categories: defaultCategories(),
       transactions: seedTransactions(),
       recurringTemplates: [],
     };
+  }
+
+  // Bring older saved data up to the current shape without losing anything.
+  function upgradeState(parsed) {
+    if (!Array.isArray(parsed.envelopes) || parsed.envelopes.length === 0) parsed.envelopes = defaultEnvelopes();
+    if (!Array.isArray(parsed.recurringTemplates)) parsed.recurringTemplates = [];
+    if (typeof parsed.sample !== "boolean") parsed.sample = false;
+    const ids = new Set(parsed.envelopes.map((e) => e.id));
+    for (const c of parsed.categories) {
+      if (c.envelope === undefined || (c.envelope !== null && !ids.has(c.envelope))) {
+        const guess = DEFAULT_CATEGORY_ENVELOPE[c.name];
+        c.envelope = guess !== undefined ? guess : (c.name === "Income" ? null : "variable");
+        if (c.envelope !== null && !ids.has(c.envelope)) c.envelope = parsed.envelopes[0].id;
+      }
+    }
+    return parsed;
   }
 
   // ---------- State ----------
@@ -127,9 +167,8 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return defaultState();
       const parsed = JSON.parse(raw);
-      if (!parsed.categories || !parsed.transactions) return defaultState();
-      if (!parsed.recurringTemplates) parsed.recurringTemplates = [];
-      return parsed;
+      if (!Array.isArray(parsed.categories) || !Array.isArray(parsed.transactions)) return defaultState();
+      return upgradeState(parsed);
     } catch (e) {
       console.warn("Failed to load state, using defaults", e);
       return defaultState();
@@ -137,7 +176,11 @@
   }
 
   function saveState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      console.warn("Could not save to browser storage", e);
+    }
   }
 
   function toast(msg) {
@@ -148,7 +191,39 @@
     toast._t = setTimeout(() => { el.hidden = true; }, 2400);
   }
 
+  // ---------- Theme (system / light / dark) ----------
+
+  function effectiveTheme() {
+    const stamped = document.documentElement.getAttribute("data-theme");
+    if (stamped === "dark" || stamped === "light") return stamped;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+
+  function applyTheme() {
+    if (state.theme === "dark" || state.theme === "light") {
+      document.documentElement.setAttribute("data-theme", state.theme);
+    }
+    $("#themeToggle").textContent = effectiveTheme() === "dark" ? "☀️" : "🌙";
+  }
+
+  function cssToken(name, fallback) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  }
+
   // ---------- Derived data ----------
+
+  function envelopeById(id) {
+    return state.envelopes.find((e) => e.id === id) || null;
+  }
+
+  function categoryByName(name) {
+    return state.categories.find((c) => c.name === name) || null;
+  }
+
+  function envelopeForCategory(name) {
+    const cat = categoryByName(name);
+    return cat && cat.envelope ? envelopeById(cat.envelope) : null;
+  }
 
   function transactionsForMonth(monthKey) {
     return state.transactions.filter((t) => monthKeyOf(t.date) === monthKey);
@@ -177,21 +252,35 @@
     });
   }
 
+  // income, spent (non-investment outflows), invested (investment-envelope outflows)
   function monthTotals(monthKey) {
-    const txns = transactionsForMonth(monthKey);
-    let income = 0, expense = 0;
-    for (const t of txns) {
-      if (t.type === "income") income += Number(t.amount);
-      else expense += Number(t.amount);
+    let income = 0, spent = 0, invested = 0;
+    for (const t of transactionsForMonth(monthKey)) {
+      const amt = Number(t.amount);
+      if (t.type === "income") { income += amt; continue; }
+      const env = envelopeForCategory(t.category);
+      if (env && env.kind === "investment") invested += amt;
+      else spent += amt;
     }
-    return { income, expense, net: income - expense };
+    return { income, spent, invested, net: income - spent - invested };
   }
 
   function categoryTotalsForMonth(monthKey) {
-    const txns = transactionsForMonth(monthKey).filter((t) => t.type === "expense");
     const totals = {};
-    for (const t of txns) {
+    for (const t of transactionsForMonth(monthKey)) {
+      if (t.type !== "expense") continue;
       totals[t.category] = (totals[t.category] || 0) + Number(t.amount);
+    }
+    return totals;
+  }
+
+  function envelopeTotalsForMonth(monthKey) {
+    const totals = {};
+    for (const e of state.envelopes) totals[e.id] = 0;
+    for (const t of transactionsForMonth(monthKey)) {
+      if (t.type !== "expense") continue;
+      const env = envelopeForCategory(t.category);
+      if (env) totals[env.id] += Number(t.amount);
     }
     return totals;
   }
@@ -200,7 +289,9 @@
 
   function render() {
     $("#currentMonthLabel").textContent = monthLabel(currentMonthKey);
+    $("#sampleNotice").hidden = !state.sample;
     renderSummary();
+    renderEnvelopes();
     populateCategoryFilterDropdown();
     renderTable();
     renderCategoryChart();
@@ -211,12 +302,71 @@
   }
 
   function renderSummary() {
-    const { income, expense, net } = monthTotals(currentMonthKey);
+    const { income, spent, invested, net } = monthTotals(currentMonthKey);
     $("#sumIncome").textContent = formatCurrency(income);
-    $("#sumExpense").textContent = formatCurrency(expense);
+    $("#sumExpense").textContent = formatCurrency(spent);
+    $("#sumInvested").textContent = formatCurrency(invested);
     $("#sumNet").textContent = formatCurrency(net);
-    const rate = income > 0 ? Math.round((net / income) * 100) : 0;
+    const rate = income > 0 ? Math.round(((invested + net) / income) * 100) : 0;
     $("#sumRate").textContent = rate + "%";
+  }
+
+  function renderEnvelopes() {
+    const totals = envelopeTotalsForMonth(currentMonthKey);
+    const grid = $("#envelopeGrid");
+    grid.innerHTML = state.envelopes.map((e) => {
+      const used = totals[e.id] || 0;
+      const alloc = Number(e.allocation) || 0;
+      const ratio = alloc > 0 ? used / alloc : 0;
+      const pct = Math.min(100, ratio * 100);
+      const isInvest = e.kind === "investment";
+      let fillCls = isInvest ? "invest" : "ok";
+      if (!isInvest && ratio > 1) fillCls = "over";
+      else if (!isInvest && ratio > 0.85) fillCls = "warn";
+      const remaining = alloc - used;
+      let remainingHtml;
+      if (isInvest) {
+        remainingHtml = remaining <= 0
+          ? `<span class="remaining reached">Goal reached</span>`
+          : `<span class="remaining">${formatCurrency(remaining)} to go</span>`;
+      } else {
+        remainingHtml = remaining < 0
+          ? `<span class="remaining over">${formatCurrency(-remaining)} over</span>`
+          : `<span class="remaining">${formatCurrency(remaining)} left</span>`;
+      }
+      const cats = state.categories.filter((c) => c.envelope === e.id);
+      const chips = cats.length
+        ? cats.map((c) => `<span class="category-pill">${escapeHtml(c.name)}</span>`).join("")
+        : `<span class="env-empty">No categories yet. Assign some under Manage.</span>`;
+      return `
+        <div class="envelope-card" data-id="${e.id}" data-kind="${e.kind}">
+          <div class="env-head">
+            <span class="env-name">${escapeHtml(e.name)}</span>
+            <span class="env-kind">${ENVELOPE_KIND_LABEL[e.kind] || ""}</span>
+          </div>
+          <div class="env-alloc">
+            <span>${isInvest ? "Monthly goal" : "Monthly amount"}</span>
+            <label class="env-alloc-field">$<input type="number" class="env-alloc-input" data-id="${e.id}" min="0" step="0.01" value="${alloc}" aria-label="${escapeHtml(e.name)} monthly amount" /></label>
+          </div>
+          <div class="progress-track"><div class="progress-fill ${fillCls}" style="width:${pct}%"></div></div>
+          <div class="env-figures">
+            <span class="spent">${formatCurrency(used)} ${isInvest ? "contributed" : "spent"}</span>
+            ${remainingHtml}
+          </div>
+          <div class="env-cats">${chips}</div>
+        </div>
+      `;
+    }).join("");
+
+    $$(".env-alloc-input", grid).forEach((input) => {
+      input.addEventListener("change", () => {
+        const env = envelopeById(input.dataset.id);
+        if (!env) return;
+        env.allocation = Math.max(0, parseFloat(input.value) || 0);
+        render();
+        toast(`${env.name} set to ${formatCurrency(env.allocation)} per month`);
+      });
+    });
   }
 
   function populateCategoryFilterDropdown() {
@@ -224,12 +374,18 @@
     const prev = sel.value;
     sel.innerHTML = '<option value="all">All categories</option>' +
       state.categories.map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join("");
-    sel.value = prev && [...sel.options].some(o => o.value === prev) ? prev : "all";
+    sel.value = prev && [...sel.options].some((o) => o.value === prev) ? prev : "all";
   }
 
   function populateCategorySelect(selectEl, selected) {
     selectEl.innerHTML = state.categories.map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join("");
     if (selected) selectEl.value = selected;
+  }
+
+  function populateEnvelopeSelect(selectEl, selected) {
+    selectEl.innerHTML = '<option value="">No envelope (income)</option>' +
+      state.envelopes.map((e) => `<option value="${e.id}">${escapeHtml(e.name)}</option>`).join("");
+    selectEl.value = selected || "";
   }
 
   function defaultCategoryForType(type) {
@@ -240,10 +396,6 @@
     return nonIncome ? nonIncome.name : state.categories[0]?.name;
   }
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  }
-
   function renderTable() {
     const txns = sortTxns(applyFilters(transactionsForMonth(currentMonthKey)));
     const tbody = $("#txnTableBody");
@@ -252,38 +404,47 @@
     if (txns.length === 0) {
       tbody.innerHTML = "";
       emptyState.hidden = false;
-    } else {
-      emptyState.hidden = true;
-      tbody.innerHTML = txns.map((t) => `
+      return;
+    }
+    emptyState.hidden = true;
+    tbody.innerHTML = txns.map((t) => {
+      const env = envelopeForCategory(t.category);
+      const amountCls = t.type === "income" ? "amount-income" : (env && env.kind === "investment" ? "amount-invest" : "amount-expense");
+      return `
         <tr data-id="${t.id}">
           <td>${t.date}</td>
           <td>${escapeHtml(t.description)}${t.recurring ? ' <span title="Recurring">🔁</span>' : ""}</td>
-          <td><span class="category-pill">${escapeHtml(t.category)}</span></td>
-          <td class="num ${t.type === "income" ? "amount-income" : "amount-expense"}">
-            ${t.type === "income" ? "+" : "-"}${formatCurrency(Math.abs(t.amount))}
-          </td>
-          <td></td>
+          <td><span class="category-pill" title="${env ? escapeHtml(env.name) : ""}">${escapeHtml(t.category)}</span></td>
+          <td class="num ${amountCls}">${t.type === "income" ? "+" : "-"}${formatCurrency(Math.abs(t.amount))}</td>
         </tr>
-      `).join("");
-      $$("#txnTableBody tr").forEach((row) => {
-        row.addEventListener("click", () => openTxnModal(row.dataset.id));
-      });
-    }
+      `;
+    }).join("");
+    $$("#txnTableBody tr").forEach((row) => {
+      row.addEventListener("click", () => openTxnModal(row.dataset.id));
+    });
+  }
+
+  function legendHtml(totals, labels) {
+    if (labels.length === 0) return '<span class="no-budgets">No expenses recorded this month.</span>';
+    return labels.map((l, i) => `
+      <span class="legend-item">
+        <span class="legend-swatch" style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></span>
+        ${escapeHtml(l)} — ${formatCurrency(totals[l])}
+      </span>
+    `).join("");
   }
 
   function renderCategoryChart() {
     const totals = categoryTotalsForMonth(currentMonthKey);
     const labels = Object.keys(totals);
     const data = Object.values(totals);
+    $("#categoryLegend").innerHTML = legendHtml(totals, labels);
+    if (typeof Chart === "undefined") return;
+
+    Chart.defaults.color = cssToken("--text-muted", "#6b7280");
+    Chart.defaults.borderColor = cssToken("--border", "#e3e5ea");
     const ctx = $("#categoryChart").getContext("2d");
-
     if (categoryChart) categoryChart.destroy();
-
-    if (labels.length === 0) {
-      $("#categoryLegend").innerHTML = '<span class="no-budgets">No expenses recorded this month.</span>';
-      categoryChart = new Chart(ctx, { type: "doughnut", data: { labels: [], datasets: [] } });
-      return;
-    }
 
     categoryChart = new Chart(ctx, {
       type: "doughnut",
@@ -296,17 +457,10 @@
         }],
       },
       options: {
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } } },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${formatCurrency(c.parsed)}` } } },
         cutout: "65%",
       },
     });
-
-    $("#categoryLegend").innerHTML = labels.map((l, i) => `
-      <span class="legend-item">
-        <span class="legend-swatch" style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></span>
-        ${escapeHtml(l)} — ${formatCurrency(totals[l])}
-      </span>
-    `).join("");
   }
 
   function renderBudgets() {
@@ -315,16 +469,17 @@
     const container = $("#budgetList");
 
     if (budgeted.length === 0) {
-      container.innerHTML = '<div class="no-budgets">No budgets set. Click "Manage" to add category limits.</div>';
+      container.innerHTML = '<div class="no-budgets">No category limits set. Click "Manage" to add some.</div>';
       return;
     }
 
     container.innerHTML = budgeted.map((c) => {
       const spent = totals[c.name] || 0;
-      const pct = Math.min(100, (spent / c.limit) * 100);
+      const ratio = spent / c.limit;
+      const pct = Math.min(100, ratio * 100);
       let cls = "ok";
-      if (spent / c.limit > 1) cls = "over";
-      else if (spent / c.limit > 0.85) cls = "warn";
+      if (ratio > 1) cls = "over";
+      else if (ratio > 0.85) cls = "warn";
       return `
         <div class="budget-row">
           <div class="budget-row-top">
@@ -340,20 +495,24 @@
   }
 
   function renderTrendChart() {
+    if (typeof Chart === "undefined") return;
     const months = [];
     for (let i = 5; i >= 0; i--) months.push(addMonths(currentMonthKey, -i));
-    const incomeData = months.map((mk) => monthTotals(mk).income);
-    const expenseData = months.map((mk) => monthTotals(mk).expense);
-    const ctx = $("#trendChart").getContext("2d");
+    const totals = months.map((mk) => monthTotals(mk));
 
+    Chart.defaults.color = cssToken("--text-muted", "#6b7280");
+    Chart.defaults.borderColor = cssToken("--border", "#e3e5ea");
+    const ctx = $("#trendChart").getContext("2d");
     if (trendChart) trendChart.destroy();
+
     trendChart = new Chart(ctx, {
       type: "bar",
       data: {
-        labels: months.map((mk) => monthLabel(mk).split(" ")[0].slice(0, 3) + " '" + mk.slice(2, 4)),
+        labels: months.map((mk) => monthLabel(mk).slice(0, 3) + " '" + mk.slice(2, 4)),
         datasets: [
-          { label: "Income", data: incomeData, backgroundColor: "#16a34a", borderRadius: 4 },
-          { label: "Expenses", data: expenseData, backgroundColor: "#e11d48", borderRadius: 4 },
+          { label: "Income", data: totals.map((t) => t.income), backgroundColor: "#16a34a", borderRadius: 4 },
+          { label: "Spent", data: totals.map((t) => t.spent), backgroundColor: "#e11d48", borderRadius: 4 },
+          { label: "Invested", data: totals.map((t) => t.invested), backgroundColor: "#0891b2", borderRadius: 4 },
         ],
       },
       options: {
@@ -392,6 +551,11 @@
 
   // ---------- Transaction Modal ----------
 
+  function updateTxnEnvelopeHint() {
+    const env = envelopeForCategory($("#txnCategory").value);
+    $("#txnEnvelopeHint").textContent = env ? `Counts toward the ${env.name} envelope` : "";
+  }
+
   function openTxnModal(id) {
     const modal = $("#txnModalOverlay");
     const form = $("#txnForm");
@@ -418,6 +582,7 @@
       $("#txnCategory").value = defaultCategoryForType("expense");
       $("#txnDeleteBtn").hidden = true;
     }
+    updateTxnEnvelopeHint();
     modal.hidden = false;
   }
 
@@ -434,26 +599,146 @@
     const categorySelect = $("#txnCategory");
     const isDefaultForOtherType = categorySelect.value === defaultCategoryForType(value === "income" ? "expense" : "income");
     if (isDefaultForOtherType) categorySelect.value = defaultCategoryForType(value);
+    updateTxnEnvelopeHint();
   }
 
   function getTxnTypeSegment() {
     return $("#txnTypeSegment").dataset.value || "expense";
   }
 
+  // ---------- Manage modal (envelopes + categories) ----------
+
+  function openBudgetModal() {
+    renderEnvelopeEditList();
+    renderBudgetEditList();
+    populateEnvelopeSelect($("#newCategoryEnvelope"), "variable");
+    $("#budgetModalOverlay").hidden = false;
+  }
+
+  function closeBudgetModal() {
+    $("#budgetModalOverlay").hidden = true;
+  }
+
+  function renderEnvelopeEditList() {
+    const container = $("#envelopeEditList");
+    container.innerHTML = state.envelopes.map((e) => `
+      <div class="edit-row env-row" data-id="${e.id}">
+        <input type="text" class="env-name-input" value="${escapeHtml(e.name)}" aria-label="Envelope name" />
+        <input type="number" class="env-alloc-edit" value="${Number(e.allocation) || 0}" min="0" step="0.01" aria-label="Monthly amount" />
+      </div>
+    `).join("");
+    $$(".env-name-input", container).forEach((input) => {
+      input.addEventListener("change", () => {
+        const env = envelopeById(input.closest(".edit-row").dataset.id);
+        env.name = input.value.trim() || env.name;
+        input.value = env.name;
+        render();
+      });
+    });
+    $$(".env-alloc-edit", container).forEach((input) => {
+      input.addEventListener("change", () => {
+        const env = envelopeById(input.closest(".edit-row").dataset.id);
+        env.allocation = Math.max(0, parseFloat(input.value) || 0);
+        render();
+      });
+    });
+  }
+
+  function renderBudgetEditList() {
+    const container = $("#budgetEditList");
+    container.innerHTML = state.categories.map((c, idx) => `
+      <div class="edit-row" data-idx="${idx}">
+        <input type="text" class="cat-name-input" value="${escapeHtml(c.name)}" aria-label="Category name" />
+        <input type="number" class="cat-limit-input" value="${c.limit}" min="0" step="0.01" placeholder="Limit" aria-label="Monthly limit" />
+        <select class="cat-env-select" aria-label="Envelope"></select>
+        <button type="button" class="icon-btn cat-delete" title="Delete category">✕</button>
+      </div>
+    `).join("");
+
+    $$(".cat-env-select", container).forEach((sel, idx) => {
+      populateEnvelopeSelect(sel, state.categories[idx].envelope || "");
+      sel.addEventListener("change", () => {
+        state.categories[idx].envelope = sel.value || null;
+        render();
+      });
+    });
+    $$(".cat-name-input", container).forEach((input, idx) => {
+      input.addEventListener("change", () => {
+        const cat = state.categories[idx];
+        const newName = input.value.trim();
+        if (!newName || newName === cat.name) { input.value = cat.name; return; }
+        if (state.categories.some((c, i) => i !== idx && c.name.toLowerCase() === newName.toLowerCase())) {
+          toast("A category with that name already exists");
+          input.value = cat.name;
+          return;
+        }
+        // Keep existing transactions and recurring items attached to the renamed category.
+        for (const t of state.transactions) if (t.category === cat.name) t.category = newName;
+        for (const r of state.recurringTemplates) if (r.category === cat.name) r.category = newName;
+        cat.name = newName;
+        render();
+      });
+    });
+    $$(".cat-limit-input", container).forEach((input, idx) => {
+      input.addEventListener("change", () => {
+        state.categories[idx].limit = Math.max(0, parseFloat(input.value) || 0);
+        render();
+      });
+    });
+    $$(".cat-delete", container).forEach((btn, idx) => {
+      btn.addEventListener("click", () => {
+        const cat = state.categories[idx];
+        const inUse = state.transactions.some((t) => t.category === cat.name);
+        if (inUse && !confirm(`"${cat.name}" is used by existing transactions. Delete anyway?`)) return;
+        state.categories.splice(idx, 1);
+        renderBudgetEditList();
+        render();
+      });
+    });
+  }
+
+  // ---------- Backup / Restore ----------
+
+  function restoreFromText(text) {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed.categories) || !Array.isArray(parsed.transactions)) throw new Error("Invalid backup");
+    if (!confirm("Replace everything in this app with this backup?")) return false;
+    state = upgradeState(parsed);
+    state.sample = false;
+    applyTheme();
+    $("#backupModalOverlay").hidden = true;
+    render();
+    toast("Backup restored");
+    return true;
+  }
+
   // ---------- Wiring ----------
 
   function init() {
-    document.documentElement.setAttribute("data-theme", state.theme);
-    $("#themeToggle").textContent = state.theme === "dark" ? "☀️" : "🌙";
+    applyTheme();
+    if (HOSTED) $$(".local-only").forEach((el) => { el.hidden = true; });
 
     $("#prevMonth").addEventListener("click", () => { currentMonthKey = addMonths(currentMonthKey, -1); render(); });
     $("#nextMonth").addEventListener("click", () => { currentMonthKey = addMonths(currentMonthKey, 1); render(); });
 
     $("#themeToggle").addEventListener("click", () => {
-      state.theme = state.theme === "dark" ? "light" : "dark";
-      document.documentElement.setAttribute("data-theme", state.theme);
-      $("#themeToggle").textContent = state.theme === "dark" ? "☀️" : "🌙";
+      state.theme = effectiveTheme() === "dark" ? "light" : "dark";
+      applyTheme();
       saveState();
+      renderCategoryChart();
+      renderTrendChart();
+    });
+
+    $("#sampleKeepBtn").addEventListener("click", () => {
+      state.sample = false;
+      render();
+    });
+    $("#sampleClearBtn").addEventListener("click", () => {
+      if (!confirm("Remove all sample transactions and start with an empty ledger?")) return;
+      state.transactions = [];
+      state.sample = false;
+      render();
+      toast("Sample data removed");
     });
 
     $("#addTxnBtn").addEventListener("click", () => openTxnModal(null));
@@ -461,6 +746,7 @@
     $("#txnModalClose").addEventListener("click", closeTxnModal);
     $("#txnCancelBtn").addEventListener("click", closeTxnModal);
     $("#txnModalOverlay").addEventListener("click", (e) => { if (e.target.id === "txnModalOverlay") closeTxnModal(); });
+    $("#txnCategory").addEventListener("change", updateTxnEnvelopeHint);
 
     $$("#txnTypeSegment .seg-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -520,7 +806,7 @@
       });
     });
 
-    // Budget management modal
+    // Manage modal
     $("#manageBudgetsBtn").addEventListener("click", openBudgetModal);
     $("#budgetModalClose").addEventListener("click", closeBudgetModal);
     $("#budgetModalDone").addEventListener("click", closeBudgetModal);
@@ -529,16 +815,19 @@
     $("#newCategoryForm").addEventListener("submit", (e) => {
       e.preventDefault();
       const name = $("#newCategoryName").value.trim();
-      const limit = parseFloat($("#newCategoryLimit").value) || 0;
+      const limit = Math.max(0, parseFloat($("#newCategoryLimit").value) || 0);
+      const envelope = $("#newCategoryEnvelope").value || null;
       if (!name) return;
       if (state.categories.some((c) => c.name.toLowerCase() === name.toLowerCase())) {
         toast("Category already exists");
         return;
       }
-      state.categories.push({ name, limit });
+      state.categories.push({ name, limit, envelope });
       $("#newCategoryForm").reset();
+      populateEnvelopeSelect($("#newCategoryEnvelope"), "variable");
       renderBudgetEditList();
       render();
+      toast(`Added ${name}`);
     });
 
     // Recurring
@@ -604,13 +893,39 @@
       toast(added > 0 ? `Added ${added} recurring transaction(s)` : "Recurring items already applied this month");
     });
 
-    // Export / Import
-    $("#exportBtn").addEventListener("click", () => {
+    // Backup / Restore
+    $("#backupBtn").addEventListener("click", () => {
+      $("#backupText").value = JSON.stringify(state, null, 2);
+      $("#backupModalOverlay").hidden = false;
+    });
+    $("#backupModalClose").addEventListener("click", () => { $("#backupModalOverlay").hidden = true; });
+    $("#backupModalOverlay").addEventListener("click", (e) => { if (e.target.id === "backupModalOverlay") $("#backupModalOverlay").hidden = true; });
+
+    $("#backupCopyBtn").addEventListener("click", async () => {
+      const text = $("#backupText").value;
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("Backup copied to clipboard");
+      } catch (err) {
+        $("#backupText").select();
+        toast("Press Ctrl+C / Cmd+C to copy");
+      }
+    });
+
+    $("#backupRestoreBtn").addEventListener("click", () => {
+      try {
+        restoreFromText($("#backupText").value);
+      } catch (err) {
+        toast("That isn't a valid Clearspend backup");
+      }
+    });
+
+    $("#backupDownloadBtn").addEventListener("click", () => {
       const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `clearspend-export-${todayISO()}.json`;
+      a.download = `clearspend-backup-${todayISO()}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -623,16 +938,9 @@
       const reader = new FileReader();
       reader.onload = () => {
         try {
-          const parsed = JSON.parse(reader.result);
-          if (!parsed.categories || !parsed.transactions) throw new Error("Invalid file");
-          if (!parsed.recurringTemplates) parsed.recurringTemplates = [];
-          state = parsed;
-          document.documentElement.setAttribute("data-theme", state.theme || "light");
-          $("#themeToggle").textContent = state.theme === "dark" ? "☀️" : "🌙";
-          render();
-          toast("Data imported");
+          restoreFromText(reader.result);
         } catch (err) {
-          toast("Import failed: invalid file");
+          toast("That file isn't a valid Clearspend backup");
         }
       };
       reader.readAsText(file);
@@ -642,48 +950,6 @@
     render();
   }
 
-  function openBudgetModal() {
-    renderBudgetEditList();
-    $("#budgetModalOverlay").hidden = false;
-  }
-
-  function closeBudgetModal() {
-    $("#budgetModalOverlay").hidden = true;
-  }
-
-  function renderBudgetEditList() {
-    const container = $("#budgetEditList");
-    container.innerHTML = state.categories.map((c, idx) => `
-      <div class="budget-edit-row" data-idx="${idx}">
-        <input type="text" class="cat-name-input" value="${escapeHtml(c.name)}" />
-        <input type="number" class="cat-limit-input" value="${c.limit}" min="0" step="0.01" placeholder="Limit" />
-        <button type="button" class="icon-btn cat-delete" title="Delete category">✕</button>
-      </div>
-    `).join("");
-
-    $$(".cat-name-input", container).forEach((input, idx) => {
-      input.addEventListener("change", () => {
-        state.categories[idx].name = input.value.trim() || state.categories[idx].name;
-        render();
-      });
-    });
-    $$(".cat-limit-input", container).forEach((input, idx) => {
-      input.addEventListener("change", () => {
-        state.categories[idx].limit = parseFloat(input.value) || 0;
-        render();
-      });
-    });
-    $$(".cat-delete", container).forEach((btn, idx) => {
-      btn.addEventListener("click", () => {
-        const cat = state.categories[idx];
-        const inUse = state.transactions.some((t) => t.category === cat.name);
-        if (inUse && !confirm(`"${cat.name}" is used by existing transactions. Delete anyway?`)) return;
-        state.categories.splice(idx, 1);
-        renderBudgetEditList();
-        render();
-      });
-    });
-  }
-
-  document.addEventListener("DOMContentLoaded", init);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
 })();

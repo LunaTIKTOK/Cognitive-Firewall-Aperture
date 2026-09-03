@@ -5,6 +5,12 @@ tracking — your data lives in your browser's `localStorage`.
 
 ## Features
 
+- **Envelopes** — three envelopes (Fixed Expenses, Variable Expenses,
+  Investments) with your own monthly amounts. Every category belongs to an
+  envelope, so spending rolls up automatically; the Investments envelope
+  tracks contributions toward a monthly goal instead of spending against a
+  limit. Rename envelopes, change amounts, and reassign categories under
+  **Manage**.
 - **Transactions** — add, edit, delete, search, filter, and sort income/expenses.
 - **Category budgets** — set a monthly limit per category and track spend with
   color-coded progress bars (green / amber / red).
@@ -45,3 +51,7 @@ and **Import** to restore it or move it to another browser/device.
 - `app.js` — application state, rendering, and event handling
 - `vendor-chart.umd.js` — vendored Chart.js 4.4.4 (UMD build), so the app has
   no runtime dependency on a CDN
+- `build.py` — bundles everything into a single hosted page
+  (`python3 build.py out.html`); the bundle loads Chart.js from cdnjs and hides
+  file download/import, which hosted viewers block, in favor of copy/paste
+  backup
