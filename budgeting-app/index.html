@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Clearspend</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">◈</span>
+        <span class="brand-name">Clearspend</span>
+      </div>
+
+      <div class="month-nav">
+        <button id="prevMonth" class="icon-btn" aria-label="Previous month">‹</button>
+        <span id="currentMonthLabel" class="month-label">September 2026</span>
+        <button id="nextMonth" class="icon-btn" aria-label="Next month">›</button>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="themeToggle" class="icon-btn" title="Toggle theme">🌙</button>
+        <button id="backupBtn" class="btn btn-ghost">Backup</button>
+        <button id="addTxnBtn" class="btn btn-primary">+ Add Transaction</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <div id="sampleNotice" class="sample-notice" hidden>
+        <span>You're looking at <strong>example data</strong> for the last three months. It is not your money.</span>
+        <span class="notice-actions">
+          <button id="sampleClearBtn" class="btn btn-primary btn-sm">Start fresh</button>
+          <button id="sampleKeepBtn" class="btn btn-ghost btn-sm">Keep examples</button>
+        </span>
+      </div>
+
+      <section class="summary-grid">
+        <div class="summary-card income">
+          <div class="summary-label">Income</div>
+          <div class="summary-value" id="sumIncome">$0.00</div>
+        </div>
+        <div class="summary-card expense">
+          <div class="summary-label">Spent</div>
+          <div class="summary-value" id="sumExpense">$0.00</div>
+        </div>
+        <div class="summary-card invest">
+          <div class="summary-label">Invested</div>
+          <div class="summary-value" id="sumInvested">$0.00</div>
+        </div>
+        <div class="summary-card net">
+          <div class="summary-label">Left over</div>
+          <div class="summary-value" id="sumNet">$0.00</div>
+        </div>
+        <div class="summary-card rate" title="Investments plus what's left over, as a share of income">
+          <div class="summary-label">Savings rate</div>
+          <div class="summary-value" id="sumRate">0%</div>
+        </div>
+      </section>
+
+      <section class="panels">
+        <div class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Envelopes</h2>
+            <span class="panel-hint">Set how much each envelope gets every month. Categories fill their envelope as you spend.</span>
+          </div>
+          <div id="envelopeGrid" class="envelope-grid"></div>
+        </div>
+
+        <div class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Transactions</h2>
+            <div class="txn-filters">
+              <input id="searchInput" type="search" placeholder="Search…" />
+              <select id="filterType">
+                <option value="all">All types</option>
+                <option value="income">Income</option>
+                <option value="expense">Expense</option>
+              </select>
+              <select id="filterCategory">
+                <option value="all">All categories</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="txn-table">
+              <thead>
+                <tr>
+                  <th data-sort="date">Date</th>
+                  <th data-sort="description">Description</th>
+                  <th data-sort="category">Category</th>
+                  <th data-sort="amount" class="num">Amount</th>
+                </tr>
+              </thead>
+              <tbody id="txnTableBody"></tbody>
+            </table>
+            <div id="emptyState" class="empty-state" hidden>
+              <p>No transactions this month yet.</p>
+              <button class="btn btn-primary" id="emptyAddBtn">Add your first transaction</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Spending by Category</h2>
+          </div>
+          <canvas id="categoryChart" height="220"></canvas>
+          <div id="categoryLegend" class="legend"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Category Budgets</h2>
+            <button id="manageBudgetsBtn" class="btn btn-ghost btn-sm">Manage</button>
+          </div>
+          <div id="budgetList" class="budget-list"></div>
+        </div>
+
+        <div class="panel panel-wide">
+          <div class="panel-header">
+            <h2>6-Month Trend</h2>
+          </div>
+          <canvas id="trendChart" height="180"></canvas>
+        </div>
+
+        <div class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Recurring Transactions</h2>
+            <button id="addRecurringBtn" class="btn btn-ghost btn-sm">+ Add Recurring</button>
+          </div>
+          <form id="recurringForm" class="inline-form" hidden>
+            <input type="text" id="recDescription" placeholder="Description" required style="flex:2" />
+            <select id="recCategory"></select>
+            <select id="recType">
+              <option value="expense">Expense</option>
+              <option value="income">Income</option>
+            </select>
+            <input type="number" id="recAmount" placeholder="Amount" min="0" step="0.01" required style="width:110px" />
+            <select id="recDay"></select>
+            <button type="submit" class="btn btn-secondary">Save</button>
+          </form>
+          <div id="recurringList" class="recurring-list"></div>
+          <button id="applyRecurringBtn" class="btn btn-secondary" style="margin-top:12px;">
+            Apply recurring items to this month
+          </button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Add/Edit Transaction Modal -->
+  <div class="modal-overlay" id="txnModalOverlay" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="txnModalTitle">Add Transaction</h3>
+        <button class="icon-btn" id="txnModalClose" aria-label="Close">✕</button>
+      </div>
+      <form id="txnForm" class="modal-body">
+        <input type="hidden" id="txnId" />
+        <div class="form-row">
+          <label>Type</label>
+          <div class="segmented" id="txnTypeSegment">
+            <button type="button" class="seg-btn active" data-value="expense">Expense</button>
+            <button type="button" class="seg-btn" data-value="income">Income</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <label for="txnDate">Date</label>
+          <input type="date" id="txnDate" required />
+        </div>
+        <div class="form-row">
+          <label for="txnDescription">Description</label>
+          <input type="text" id="txnDescription" placeholder="e.g. Groceries at Trader Joe's" required />
+        </div>
+        <div class="form-row">
+          <label for="txnCategory">Category</label>
+          <select id="txnCategory"></select>
+          <span class="field-hint" id="txnEnvelopeHint"></span>
+        </div>
+        <div class="form-row">
+          <label for="txnAmount">Amount</label>
+          <input type="number" id="txnAmount" min="0" step="0.01" placeholder="0.00" required />
+        </div>
+        <div class="form-row checkbox-row">
+          <label><input type="checkbox" id="txnRecurring" /> Mark as recurring</label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="txnDeleteBtn" hidden>Delete</button>
+          <div style="flex:1"></div>
+          <button type="button" class="btn btn-ghost" id="txnCancelBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Manage Envelopes & Categories Modal -->
+  <div class="modal-overlay" id="budgetModalOverlay" hidden>
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>Envelopes &amp; Categories</h3>
+        <button class="icon-btn" id="budgetModalClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <h4 class="modal-section-title">Envelopes</h4>
+        <p class="field-hint">Rename an envelope or change its monthly amount.</p>
+        <div id="envelopeEditList" class="edit-list"></div>
+
+        <h4 class="modal-section-title">Categories</h4>
+        <p class="field-hint">Each category belongs to one envelope. The limit is an optional per-category budget.</p>
+        <div class="edit-list-head">
+          <span>Name</span><span>Limit</span><span>Envelope</span><span></span>
+        </div>
+        <div id="budgetEditList" class="edit-list"></div>
+        <form id="newCategoryForm" class="inline-form">
+          <input type="text" id="newCategoryName" placeholder="New category" required />
+          <input type="number" id="newCategoryLimit" placeholder="Limit" min="0" step="0.01" style="width:100px" />
+          <select id="newCategoryEnvelope"></select>
+          <button type="submit" class="btn btn-secondary">Add</button>
+        </form>
+      </div>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button class="btn btn-primary" id="budgetModalDone">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backup / Restore Modal -->
+  <div class="modal-overlay" id="backupModalOverlay" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Backup &amp; Restore</h3>
+        <button class="icon-btn" id="backupModalClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="field-hint">Your data lives only in this browser. Copy the text below and keep it somewhere safe. To move it to another device, paste a backup here and press Restore.</p>
+        <textarea id="backupText" class="backup-text" spellcheck="false" aria-label="Backup data"></textarea>
+        <div class="inline-form local-only">
+          <button type="button" class="btn btn-ghost" id="backupDownloadBtn">Download file</button>
+          <label class="btn btn-ghost file-btn">
+            Import file
+            <input type="file" id="importInput" accept="application/json" hidden />
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="backupRestoreBtn">Restore from pasted text</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-primary" id="backupCopyBtn">Copy backup</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="vendor-chart.umd.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
